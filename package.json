@@ -1,0 +1,10 @@
+{
+  "name": "cima-admin-api",
+  "version": "1.0.0",
+  "description": "API to scrape movie links for Cima Ai admin panel.",
+  "main": "api/search.js",
+  "dependencies": {
+    "chrome-aws-lambda": "^10.1.0",
+    "puppeteer-core": "^10.4.0"
+  }
+}
