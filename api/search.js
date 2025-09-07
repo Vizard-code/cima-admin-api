@@ -1,99 +1,106 @@
-// --- Advanced Link Scraper API using Puppeteer on Vercel ---
-// This file should be placed in the /api directory of your Vercel project.
-// For example: /api/search.js
+const axios = require('axios');
+const cheerio = require('cheerio');
 
-// We use puppeteer-core which is a lightweight version of Puppeteer.
-// chrome-aws-lambda is a special package that makes Chromium work on Vercel's environment.
-const puppeteer = require('puppeteer-core');
-const chrome = require('chrome-aws-lambda');
+// دالة للبحث في جوجل وإرجاع أفضل النتائج
+async function searchGoogle(query) {
+    console.log(`[LOG] Searching for: "${query}"`);
+    try {
+        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+        const { data } = await axios.get(searchUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        });
 
-// This is the main function that Vercel will run.
-export default async function handler(request, response) {
-  // --- Security: Set CORS headers to allow your admin panel to call this API ---
-  response.setHeader('Access-Control-Allow-Credentials', true);
-  response.setHeader('Access-Control-Allow-Origin', '*'); // Or replace * with your admin panel's domain for more security
-  response.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
-  
-  // Handle preflight requests for CORS
-  if (request.method === 'OPTIONS') {
-    response.status(200).end();
-    return;
-  }
-
-  let browser = null;
-
-  try {
-    // --- Get the movie title from the request URL ---
-    // Example request: /api/search?title=Inception
-    const movieTitle = request.query.title;
-    if (!movieTitle) {
-      return response.status(400).json({ error: 'Movie title is required.' });
+        const $ = cheerio.load(data);
+        const links = [];
+        $('.result__url').each((i, element) => {
+            // ❗️ تم التعديل: نأخذ أول 5 نتائج فقط لزيادة السرعة
+            if (i < 5) { 
+                let url = $(element).text().trim();
+                if (!url.startsWith('http')) {
+                    url = 'https://' + url;
+                }
+                links.push(url);
+            }
+        });
+        console.log(`[LOG] Found ${links.length} search results.`);
+        return links;
+    } catch (error) {
+        console.error('Error in searchGoogle:', error.message);
+        return [];
     }
-
-    // --- Launch the headless browser ---
-    console.log('Launching browser...');
-    browser = await puppeteer.launch({
-      args: chrome.args,
-      executablePath: await chrome.executablePath,
-      headless: chrome.headless,
-    });
-    
-    const page = await browser.newPage();
-    // Set a realistic user agent to avoid being blocked
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-
-
-    // --- Perform the search on a search engine ---
-    console.log(`Navigating to Google for movie: ${movieTitle}`);
-    // We will search for a specific site, for example, "akoam" to get direct links.
-    // You can change this to any search query you prefer.
-    const searchQuery = `${movieTitle} موقع ايموشن فيديو`;
-    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`);
-    
-    // --- Scrape the search results ---
-    console.log('Scraping search results...');
-    
-    // This code runs inside the browser context
-    const links = await page.evaluate(() => {
-      const results = [];
-      // Select all the search result links from Google
-      const items = document.querySelectorAll('div.g a');
-      items.forEach(item => {
-        // We only want links that lead to the target site and have a title
-        if (item.href && item.querySelector('h3')) {
-          results.push({
-            title: item.querySelector('h3').innerText,
-            url: item.href,
-          });
-        }
-      });
-      // Return the first 5 results
-      return results.slice(0, 5);
-    });
-
-    console.log('Found links:', links);
-    
-    // --- TODO: Visit each link and find the actual download/watch links ---
-    // This part is more complex as each site has a different structure.
-    // For now, we will just return the search results.
-    // You would add a loop here: for (const link of links) { await page.goto(link.url); ...scrape... }
-
-
-    // --- Send the results back to your admin panel ---
-    response.status(200).json({
-      message: `Found ${links.length} potential pages.`,
-      results: links,
-    });
-
-  } catch (error) {
-    console.error('Error during scraping:', error);
-    response.status(500).json({ error: 'Failed to scrape links.', details: error.message });
-  } finally {
-    // --- ALWAYS close the browser to free up resources ---
-    if (browser !== null) {
-      console.log('Closing browser...');
-      await browser.close();
-    }
-  }
 }
+
+// دالة لزيارة صفحة واستخراج روابط المشاهدة/التحميل
+async function scrapePageForLinks(url) {
+    console.log(`[LOG] Scraping page: ${url}`);
+    try {
+        const { data } = await axios.get(url, {
+             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' },
+            timeout: 4000 // ❗️ تم التعديل: تقليل المهلة إلى 4 ثوانٍ
+        });
+
+        const $ = cheerio.load(data);
+        const foundLinks = new Set(); 
+
+        $('iframe[src]').each((i, element) => {
+            const src = $(element).attr('src');
+            if (src && (src.includes('embed') || src.includes('player') || src.includes('video'))) {
+                foundLinks.add(src);
+            }
+        });
+
+        $('a[href]').each((i, element) => {
+            const href = $(element).attr('href');
+            const text = $(element).text().toLowerCase();
+            if (href && (text.includes('تحميل') || text.includes('download') || href.match(/\.(mp4|mkv|avi)$/))) {
+                foundLinks.add(href);
+            }
+        });
+        
+        const pageLinks = Array.from(foundLinks).map(linkUrl => ({
+            url: new URL(linkUrl, url).href,
+            title: new URL(url).hostname
+        }));
+        console.log(`[LOG] Found ${pageLinks.length} links on ${url}`);
+        return pageLinks;
+
+    } catch (error) {
+        console.error(`[WARN] Failed to scrape ${url}:`, error.message);
+        return []; // إرجاع مصفوفة فارغة بدلاً من الفشل الكامل
+    }
+}
+
+
+module.exports = async (req, res) => {
+    const movieTitle = req.query.title;
+
+    if (!movieTitle) {
+        return res.status(400).json({ error: 'Movie title is required.' });
+    }
+
+    try {
+        const searchQuery = `${movieTitle} مشاهدة اون لاين OR تحميل`;
+        const googleResults = await searchGoogle(searchQuery);
+
+        if (googleResults.length === 0) {
+            return res.status(404).json({ error: 'Could not find search results.' });
+        }
+        
+        const scrapingPromises = googleResults.map(url => scrapePageForLinks(url));
+        const resultsFromAllPages = await Promise.all(scrapingPromises);
+        const finalResults = resultsFromAllPages.flat();
+
+        if (finalResults.length === 0) {
+            console.log(`[LOG] No direct links found for "${movieTitle}".`);
+            return res.status(404).json({ results: [], message: 'No direct links found on the top search results.' });
+        }
+
+        console.log(`[SUCCESS] Found a total of ${finalResults.length} links for "${movieTitle}".`);
+        res.status(200).json({ results: finalResults });
+
+    } catch (error) {
+        console.error('Main handler error:', error);
+        res.status(500).json({ error: 'An internal server error occurred.' });
+    }
+};
+
